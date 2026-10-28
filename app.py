@@ -1,184 +1,97 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-import html
-from io import BytesIO
 from pathlib import Path
 
-# =========================================================
-# PAGE SETUP
-# =========================================================
-st.set_page_config(
-    page_title="Smart Chain AI Late Delivery Risk",
-    page_icon="📦",
-    layout="wide"
-)
+st.set_page_config(page_title="Smart Chain AI | Delivery Risk", page_icon="📦", layout="wide")
 
-PINK = "#e653b4"
-BLUE = "#1688ff"
-ORANGE = "#ff7138"
-
+# ---------- Theme ----------
 st.markdown("""
 <style>
-.stApp {
-    background: #171717;
-}
-[data-testid="stSidebar"] {
-    background: #24242c;
-}
-h1, h2, h3, p, label {
-    color: #ffffff;
-}
-.kpi-card {
-    background: #ffffff;
-    border-left: 6px solid #e653b4;
-    border-radius: 12px;
-    min-height: 112px;
-    padding: 17px 10px;
-    text-align: center;
-    box-sizing: border-box;
-}
-.kpi-label {
-    color: #333333;
-    font-size: 15px;
-    font-weight: 600;
-    margin-bottom: 12px;
-}
-.kpi-value {
-    color: #111111;
-    font-size: 27px;
-    font-weight: 700;
-    overflow-wrap: anywhere;
-}
-.chart-heading {
-    color: #ffffff;
-    font-size: 18px;
-    font-weight: 600;
-    margin: 8px 0;
-}
+.stApp {background:#10141c;color:#f4f6fb}
+[data-testid="stSidebar"] {background:#1b2230}
+h1,h2,h3,p,label {color:#f4f6fb}
+div[data-testid="stMetric"] {background:#202938;padding:16px;border-radius:12px;border-left:4px solid #e653b4}
+.insight {background:#202938;border-radius:10px;padding:14px;margin-bottom:8px}
 </style>
 """, unsafe_allow_html=True)
 
+PINK, BLUE, ORANGE = "#e653b4", "#1688ff", "#ff7138"
 
-# =========================================================
-# DATA HELPERS
-# =========================================================
-def read_data(file_source):
-    """Read CSV/Excel from a Streamlit upload or a local project file."""
-    if file_source is None:
+def load_file(file):
+    if file is None:
         return None
-
-    if hasattr(file_source, "getvalue"):
-        raw = file_source.getvalue()
-        filename = file_source.name.lower()
-        display_name = file_source.name
-    else:
-        path = Path(file_source)
-        if not path.exists() or not path.is_file():
+    name = getattr(file, "name", str(file)).lower()
+    try:
+        if name.endswith(".csv"):
+            return pd.read_csv(file, low_memory=False)
+        return pd.read_excel(file)
+    except Exception:
+        try:
+            file.seek(0)
+            return pd.read_csv(file, low_memory=False)
+        except Exception:
+            st.error(f"Could not read {name}. Check the file format.")
             return None
-        raw = path.read_bytes()
-        filename = path.name.lower()
-        display_name = path.name
 
-    if filename.endswith(".csv"):
-        try:
-            return pd.read_csv(BytesIO(raw), low_memory=False)
-        except UnicodeDecodeError:
-            return pd.read_csv(BytesIO(raw), encoding="latin-1", low_memory=False)
+def default_file(names):
+    root = Path(__file__).resolve().parent
+    for folder in (root / "data", root):
+        for name in names:
+            path = folder / name
+            if path.exists():
+                return path
+    return None
 
-    if filename.endswith((".xlsx", ".xls")):
-        try:
-            return pd.read_excel(BytesIO(raw))
-        except Exception as excel_error:
-            # Some files contain CSV data despite having an Excel-like extension.
-            try:
-                
-    if numeric.notna().mean() >= 0.8:
-        return numeric.where(numeric.isin([0, 1]))
+def column(df, names):
+    if df is None:
+        return None
+    norm = {str(c).strip().lower().replace("_", " "): c for c in df.columns}
+    for n in names:
+        key = n.lower().replace("_", " ")
+        if key in norm:
+            return norm[key]
+    for n in names:
+        key = n.lower().replace("_", " ")
+        for k, original in norm.items():
+            if key in k:
+                return original
+    return None
 
-    mapping = {
-        "1": 1, "0": 0,
-        "yes": 1, "no": 0,
-        "true": 1, "false": 0,
-        "late": 1,
-        "on time": 0,
-        "on-time": 0,
-        "ontime": 0,
-        "high risk": 1,
-        "low risk": 0
-    }
-
+def binary(series):
+    nums = pd.to_numeric(series, errors="coerce")
+    if nums.notna().mean() > 0.8:
+        return nums.where(nums.isin([0, 1]))
+    mapping = {"yes":1, "no":0, "true":1, "false":0, "late":1,
+               "on time":0, "on-time":0, "high risk":1, "low risk":0}
     return series.astype(str).str.strip().str.lower().map(mapping)
 
+def read_default(path):
+    if path is None:
+        return None
+    try:
+        return pd.read_csv(path, low_memory=False) if path.suffix.lower() == ".csv" else pd.read_excel(path)
+    except Exception:
+        return None
 
-def probabilities(series):
-    values = pd.to_numeric(series, errors="coerce")
-    if values.notna().sum() == 0:
-        return values
+# ---------- Data loading: bundled data first, uploads as fallback ----------
+st.sidebar.title("Dashboard data")
+pred_default = default_file(["ML_Risk_Predictions.csv", "ML_Risk_Predictions.xlsx", "ML_Risk_Predictions.csv.xlsx"])
+orders_default = default_file(["orders.xlsx", "orders.csv", "APL_Lo...ed.csv.xlsx", "DataCoSupplyChainDataset.csv", "DataCoSupplyChainDataset.xlsx"])
 
-    if values.max() > 1:
-        values = values / 100
+pred_upload = st.sidebar.file_uploader("Prediction results (CSV/XLSX)", type=["csv","xlsx","xls"])
+orders_upload = st.sidebar.file_uploader("Original orders (CSV/XLSX)", type=["csv","xlsx","xls"])
 
-    return values.clip(0, 1)
+pred = load_file(pred_upload) if pred_upload else read_default(pred_default)
+orders = load_file(orders_upload) if orders_upload else read_default(orders_default)
 
+st.title("📦 Smart Chain AI — Late Delivery Risk")
+st.caption("Machine-learning risk review • Operational performance • Actionable insights")
 
-def labels(series):
-    return series.fillna("Unknown").astype(str).replace("", "Unknown")
+if pred is None and orders is None:
+    st.warning("The dashboard code is deployed, but no default datasets were found. Add approved files to a `data/` folder or upload them in the sidebar.")
+    st.markdown("**Expected files:** `data/ML_Risk_Predictions.csv` and `data/orders.xlsx`.")
+    st.stop()
+    
 
-
-def kpi_card(label, value):
-    safe_label = html.escape(str(label))
-    safe_value = html.escape(str(value))
-
-    st.markdown(
-        f"""
-        <div class="kpi-card">
-            <div class="kpi-label">{safe_label}</div>
-            <div class="kpi-value">{safe_value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-def heading(text):
-    st.markdown(
-        f'<div class="chart-heading">{html.escape(text)}</div>',
-        unsafe_allow_html=True
-    )
-
-
-def show_chart(fig, height=320):
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor="#ffffff",
-        plot_bgcolor="#ffffff",
-        font=dict(color="#333333", size=11),
-        margin=dict(l=15, r=15, t=40, b=25),
-        height=height
-    )
-    st.plotly_chart(fig, width="stretch")
-
-
-def rate_table(df, group_col):
-    temp = df[[group_col, "_late"]].copy()
-    temp["_late"] = pd.to_numeric(temp["_late"], errors="coerce")
-    temp = temp.dropna(subset=["_late"])
-
-    if temp.empty:
-        return pd.DataFrame()
-
-    temp[group_col] = labels(temp[group_col])
-
-    result = temp.groupby(group_col, as_index=False).agg(
-        Orders=("_late", "size"),
-        Late_Rate=("_late", "mean")
-    )
-    result["Late Rate (%)"] = result["Late_Rate"] * 100
-    return result
-
-
-def money_or_number(value):
-    return f"{value:,.2f}"
+# ---------- Identify fields ----------
