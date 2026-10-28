@@ -1,4 +1,5 @@
-            fig = px.treemap(grouped, path=[category], values=value, color=value, color_continuous_scale="RdPu")
+import io
+fig = px.treemap(grouped, path=[category], values=value, color=value, color_continuous_scale="RdPu")
             show_chart(fig)
         else:
             st.info("Requires a product category column.")
