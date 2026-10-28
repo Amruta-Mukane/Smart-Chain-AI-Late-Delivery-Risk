@@ -93,4 +93,24 @@ def read_data(file_source):
             return pd.read_excel(BytesIO(raw))
         except Exception as excel_error:
             # Some files contain CSV data despite having an Excel-like extension.
+            
+    if filename.endswith((".xlsx", ".xls")):
+        try:
+            return pd.read_excel(BytesIO(raw))
+        except Exception as excel_error:
             try:
+                return pd.read_csv(BytesIO(raw), low_memory=False)
+            except Exception:
+                try:
+                    return pd.read_csv(
+                        BytesIO(raw),
+                        encoding="latin-1",
+                        low_memory=False
+                    )
+                except Exception:
+                    st.error(
+                        f"Could not read {display_name}. "
+                        f"Excel error: {excel_error}"
+                    )
+                    return None
+
