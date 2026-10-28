@@ -3,9 +3,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import html
+from io import BytesIO
 
 # =========================================================
-# 1. PAGE CONFIGURATION
+# PAGE SETUP
 # =========================================================
 st.set_page_config(
     page_title="Smart Chain AI Late Delivery Risk",
@@ -16,116 +18,135 @@ st.set_page_config(
 PINK = "#e653b4"
 BLUE = "#1688ff"
 ORANGE = "#ff7138"
-PURPLE = "#6516a8"
-DARK = "#171717"
 
-# =========================================================
-# 2. DASHBOARD STYLING
-# =========================================================
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #171717;
-        color: #ffffff;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #24242c;
-    }
-    h1, h2, h3, p, label {
-        color: #ffffff;
-    }
-    div[data-testid="stMetric"] {
-        background-color: white;
-        color: #222222;
-        padding: 15px;
-        border-radius: 10px;
-        border-left: 5px solid #e653b4;
-    }
-    div[data-testid="stMetric"] label,
-    div[data-testid="stMetric"] [data-testid="stMetricValue"],
-    div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
-        color: #222222 !important;
-    }
-    .dashboard-note {
-        color: #d1d5db;
-        font-size: 14px;
-    }
-    div[data-testid="stDataFrame"] {
-        background-color: white;
-    }
+.stApp {
+    background: #171717;
+}
+[data-testid="stSidebar"] {
+    background: #24242c;
+}
+h1, h2, h3, p, label {
+    color: #ffffff;
+}
+.kpi-card {
+    background: #ffffff;
+    border-left: 6px solid #e653b4;
+    border-radius: 12px;
+    min-height: 112px;
+    padding: 17px 10px;
+    text-align: center;
+    box-sizing: border-box;
+}
+.kpi-label {
+    color: #333333;
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+.kpi-value {
+    color: #111111;
+    font-size: 27px;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+.chart-heading {
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 8px 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
 
 # =========================================================
-# 3. HELPER FUNCTIONS
+# DATA HELPERS
 # =========================================================
 def read_data(uploaded_file):
-    """Read a CSV or Excel file."""
+    """Read CSV or Excel, including files with a misleading extension."""
     if uploaded_file is None:
         return None
 
-    try:
-        uploaded_file.seek(0)
+    raw = uploaded_file.getvalue()
+    filename = uploaded_file.name.lower()
 
-        if uploaded_file.name.lower().endswith(".csv"):
+    if filename.endswith(".csv"):
+        try:
+            return pd.read_csv(BytesIO(raw), low_memory=False)
+        except UnicodeDecodeError:
+            return pd.read_csv(
+                BytesIO(raw), encoding="latin-1", low_memory=False
+            )
+
+    if filename.endswith((".xlsx", ".xls")):
+        try:
+            return pd.read_excel(BytesIO(raw))
+        except Exception as excel_error:
+            # Some files have a CSV extension added before .xlsx.
             try:
-                return pd.read_csv(uploaded_file, low_memory=False)
-            except UnicodeDecodeError:
-                uploaded_file.seek(0)
-                return pd.read_csv(
-                    uploaded_file,
-                    encoding="latin-1",
-                    low_memory=False
-                )
+                return pd.read_csv(BytesIO(raw), low_memory=False)
+            except Exception:
+                try:
+                    return pd.read_csv(
+                        BytesIO(raw), encoding="latin-1", low_memory=False
+                    )
+                except Exception:
+                    st.error(
+                        f"Could not read {uploaded_file.name}. "
+                        f"Excel error: {excel_error}"
+                    )
+                    return None
 
-        return pd.read_excel(uploaded_file)
+    # Try CSV first, then Excel.
+    try:
+        return pd.read_csv(BytesIO(raw), low_memory=False)
+    except Exception:
+        try:
+            return pd.read_excel(BytesIO(raw))
+        except Exception as error:
+            st.error(f"Unable to read file: {error}")
+            return None
 
-    except Exception as error:
-        st.error(f"Unable to read {uploaded_file.name}: {error}")
-        return None
 
-
-def find_col(df, names):
-    """Find a column regardless of capitalization or spaces."""
+def find_col(df, candidates):
+    """Find a column by normalized exact name, then partial name."""
     if df is None:
         return None
 
-    normalized = {
-        str(c).strip().lower().replace("_", " "): c
-        for c in df.columns
-    }
+    def normalize(value):
+        return " ".join(
+            str(value).strip().lower().replace("_", " ").split()
+        )
 
-    for name in names:
-        key = name.strip().lower().replace("_", " ")
-        if key in normalized:
-            return normalized[key]
+    actual = {normalize(c): c for c in df.columns}
 
-    for name in names:
-        key = name.strip().lower().replace("_", " ")
-        for normalized_name, original_name in normalized.items():
-            if key in normalized_name:
+    for candidate in candidates:
+        key = normalize(candidate)
+        if key in actual:
+            return actual[key]
+
+    for candidate in candidates:
+        key = normalize(candidate)
+        for normalized_name, original_name in actual.items():
+            if key and key in normalized_name:
                 return original_name
 
     return None
 
 
 def binary_values(series):
-    """Convert common yes/no, late/on-time or numeric labels to 0/1."""
+    """Convert common late-risk labels to 0 or 1."""
     numeric = pd.to_numeric(series, errors="coerce")
 
     if numeric.notna().mean() >= 0.8:
         return numeric.where(numeric.isin([0, 1]))
 
-    text = series.astype(str).str.strip().str.lower()
-
     mapping = {
-        "1": 1,
-        "0": 0,
-        "yes": 1,
-        "no": 0,
-        "true": 1,
-        "false": 0,
+        "1": 1, "0": 0,
+        "yes": 1, "no": 0,
+        "true": 1, "false": 0,
         "late": 1,
         "on time": 0,
         "on-time": 0,
@@ -134,13 +155,11 @@ def binary_values(series):
         "low risk": 0
     }
 
-    return text.map(mapping)
+    return series.astype(str).str.strip().str.lower().map(mapping)
 
 
-def make_probability(series):
-    """Normalize probabilities to the 0–1 range."""
+def probabilities(series):
     values = pd.to_numeric(series, errors="coerce")
-
     if values.notna().sum() == 0:
         return values
 
@@ -150,112 +169,120 @@ def make_probability(series):
     return values.clip(0, 1)
 
 
-def clean_labels(series):
+def labels(series):
     return series.fillna("Unknown").astype(str).replace("", "Unknown")
 
 
-def styled_chart(fig, height=320):
-    """Apply consistent styling to Plotly charts."""
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        font=dict(color="#333333", size=11),
-        margin=dict(l=15, r=15, t=48, b=15),
-        height=height,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.25,
-            xanchor="left",
-            x=0
-        )
-    )
-    fig.update_xaxes(showgrid=True, gridcolor="#eeeeee")
-    fig.update_yaxes(showgrid=True, gridcolor="#eeeeee")
-    st.plotly_chart(fig, use_container_width=True)
+def kpi_card(label, value):
+    safe_label = html.escape(str(label))
+    safe_value = html.escape(str(value))
 
-
-def chart_title(title):
     st.markdown(
-        f"<h4 style='color:#222222; text-align:center; "
-        f"font-weight:500'>{title}</h4>",
+        f"""
+        <div class="kpi-card">
+            <div class="kpi-label">{safe_label}</div>
+            <div class="kpi-value">{safe_value}</div>
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
 
-def safe_rate(df, group_col, risk_col):
-    """Calculate late rate and order count by a category."""
-    temp = df[[group_col, risk_col]].copy()
-    temp[risk_col] = pd.to_numeric(temp[risk_col], errors="coerce")
-    temp = temp.dropna(subset=[risk_col])
-    temp[group_col] = clean_labels(temp[group_col])
+def heading(text):
+    st.markdown(
+        f'<div class="chart-heading">{html.escape(text)}</div>',
+        unsafe_allow_html=True
+    )
+
+
+def show_chart(fig, height=320):
+    fig.update_layout(
+        template="plotly_white",
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font=dict(color="#333333", size=11),
+        margin=dict(l=15, r=15, t=40, b=25),
+        height=height
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def rate_table(df, group_col):
+    temp = df[[group_col, "_late"]].copy()
+    temp["_late"] = pd.to_numeric(temp["_late"], errors="coerce")
+    temp = temp.dropna(subset=["_late"])
 
     if temp.empty:
         return pd.DataFrame()
 
+    temp[group_col] = labels(temp[group_col])
+
     result = temp.groupby(group_col, as_index=False).agg(
-        Orders=(risk_col, "size"),
-        Late_Rate=(risk_col, "mean")
+        Orders=("_late", "size"),
+        Late_Rate=("_late", "mean")
     )
     result["Late Rate (%)"] = result["Late_Rate"] * 100
     return result
 
 
+def money_or_number(value):
+    return f"{value:,.2f}"
+
+
 # =========================================================
-# 4. SIDEBAR: UPLOADS AND FILTERS
+# SIDEBAR UPLOADS
 # =========================================================
 st.sidebar.title("Dashboard Filters")
 
 prediction_file = st.sidebar.file_uploader(
     "Upload prediction results",
-    type=["csv", "xlsx"],
-    help="Upload ML_Risk_Predictions.csv"
+    type=["csv", "xlsx", "xls"],
+    key="prediction_file"
 )
 
 orders_file = st.sidebar.file_uploader(
     "Upload original order dataset",
-    type=["csv", "xlsx"],
-    help="Upload the original dataset used for operational analysis."
+    type=["csv", "xlsx", "xls"],
+    key="orders_file"
 )
 
-st.sidebar.markdown("---")
+st.sidebar.divider()
 st.sidebar.caption(
-    "Use the original order dataset for shipping, market, region, "
-    "country, sales and product-category charts."
+    "Prediction results drive AI risk charts. "
+    "The original dataset drives order, sales, region and shipping charts."
 )
+
 
 # =========================================================
-# 5. TITLE
+# HEADER
 # =========================================================
 st.title("📦 Smart Chain AI Late Delivery Risk")
 st.caption("Machine Learning-Based Late Delivery Risk Prediction")
 
 
 # =========================================================
-# 6. LOAD DATA
+# LOAD PREDICTION FILE
 # =========================================================
 pred = read_data(prediction_file)
-orders = read_data(orders_file)
 
 if pred is None:
     st.info(
-        "Upload your ML_Risk_Predictions.csv file using the sidebar "
-        "to display the prediction dashboard."
+        "Upload ML_Risk_Predictions.csv in the sidebar to start the dashboard."
     )
     st.markdown("""
     ### Dashboard features
-    - Order and late-delivery KPIs
-    - Predicted delivery-risk distribution
-    - Shipping-mode and regional analysis
-    - Sales and product-category analysis
+    - Total orders and late-delivery KPIs
+    - Predicted risk distribution
+    - Risk probability analysis
+    - Shipping and regional analysis
+    - Sales and product-category charts
     - Country-level risk map
-    - Risk factors associated with late deliveries
+    - Risk-driver associations
     """)
     st.stop()
 
 if pred.empty:
-    st.error("The prediction dataset is empty.")
+    st.error("The prediction file has no rows.")
     st.stop()
 
 pred.columns = [str(c).strip() for c in pred.columns]
@@ -264,46 +291,45 @@ pred.columns = [str(c).strip() for c in pred.columns]
 prob_col = find_col(pred, [
     "Late_Delivery_Probability",
     "Late Delivery Probability",
-    "Probability",
-    "Predicted Probability"
+    "Probability"
 ])
 
-pred_col = find_col(pred, [
+predicted_col = find_col(pred, [
     "Predicted_Late_Risk",
     "Predicted Late Risk",
-    "Prediction",
-    "Predicted"
+    "Predicted",
+    "Prediction"
 ])
 
-actual_pred_col = find_col(pred, [
+actual_col = find_col(pred, [
     "Actual_Late_Risk",
     "Actual Late Risk",
     "Actual"
 ])
 
-category_pred_col = find_col(pred, [
+risk_category_col = find_col(pred, [
     "Risk_Category",
     "Risk Category",
     "Risk Level"
 ])
 
-if prob_col:
-    pred["_prob"] = make_probability(pred[prob_col])
-else:
-    pred["_prob"] = float("nan")
+pred["_prob"] = (
+    probabilities(pred[prob_col])
+    if prob_col else float("nan")
+)
 
-if pred_col:
-    pred["_predicted"] = binary_values(pred[pred_col])
-else:
-    pred["_predicted"] = float("nan")
+pred["_predicted"] = (
+    binary_values(pred[predicted_col])
+    if predicted_col else float("nan")
+)
 
-if actual_pred_col:
-    pred["_actual"] = binary_values(pred[actual_pred_col])
-else:
-    pred["_actual"] = float("nan")
+pred["_actual"] = (
+    binary_values(pred[actual_col])
+    if actual_col else float("nan")
+)
 
-if category_pred_col:
-    pred["_risk_category"] = clean_labels(pred[category_pred_col])
+if risk_category_col:
+    pred["_risk_category"] = labels(pred[risk_category_col])
 elif pred["_prob"].notna().any():
     pred["_risk_category"] = pd.cut(
         pred["_prob"],
@@ -320,49 +346,25 @@ else:
 
 
 # =========================================================
-# 7. PREPARE ORIGINAL ORDER DATA
+# LOAD ORIGINAL ORDER DATA
 # =========================================================
+orders = read_data(orders_file)
+
 if orders is not None:
     orders.columns = [str(c).strip() for c in orders.columns]
 
-    shipping_col = find_col(orders, [
-        "Shipping Mode", "Ship Mode"
-    ])
-    market_col = find_col(orders, [
-        "Market"
-    ])
-    region_col = find_col(orders, [
-        "Order Region", "Region"
-    ])
-    country_col = find_col(orders, [
-        "Order Country", "Country"
-    ])
-    category_col = find_col(orders, [
-        "Category Name", "Product Category"
-    ])
-    sales_col = find_col(orders, [
-        "Sales", "Sales Amount", "Revenue"
-    ])
-    status_col = find_col(orders, [
-        "Order Status", "Delivery Status", "Status"
-    ])
-    late_col = find_col(orders, [
-        "Late_delivery_risk", "Late Delivery Risk",
-        "Late Risk", "Is Late"
-    ])
-    date_col = find_col(orders, [
-        "order date", "Order Date", "Date"
-    ])
-    scheduled_days_col = find_col(orders, [
-        "Days for shipment (scheduled)",
-        "Days for shipment scheduled",
-        "Scheduled Shipping Days"
-    ])
-    actual_days_col = find_col(orders, [
-        "Days for shipping (real)",
-        "Days for shipping real",
-        "Actual Shipping Days"
-    ])
+    shipping_col = find_col(orders, ["Shipping Mode", "Ship Mode"])
+    market_col = find_col(orders, ["Market"])
+    region_col = find_col(orders, ["Order Region", "Region"])
+    country_col = find_col(orders, ["Order Country", "Country"])
+    category_col = find_col(orders, ["Category Name", "Product Category"])
+    sales_col = find_col(orders, ["Sales", "Sales Amount", "Revenue"])
+    status_col = find_col(orders, ["Order Status", "Delivery Status"])
+    late_col = find_col(
+        orders,
+        ["Late_delivery_risk", "Late Delivery Risk", "Late Risk", "Is Late"]
+    )
+    date_col = find_col(orders, ["order date", "Order Date", "Date"])
 
     if late_col:
         orders["_late"] = binary_values(orders[late_col])
@@ -371,71 +373,45 @@ if orders is not None:
 
 else:
     shipping_col = market_col = region_col = country_col = None
-    category_col = sales_col = status_col = late_col = None
-    date_col = scheduled_days_col = actual_days_col = None
+    category_col = sales_col = status_col = late_col = date_col = None
 
 
 # =========================================================
-# 8. FILTERS
+# OPTIONAL FILTERS
 # =========================================================
-filtered_orders = orders.copy() if orders is not None else None
+data = orders.copy() if orders is not None else None
 
-if filtered_orders is not None:
-    with st.sidebar.expander("Filter original order data", expanded=False):
+if data is not None:
+    with st.sidebar.expander("Filter order data", expanded=False):
         if market_col:
-            market_options = sorted(
-                clean_labels(filtered_orders[market_col]).unique().tolist()
-            )
-            selected_markets = st.multiselect(
-                "Market",
-                market_options,
-                default=market_options
-            )
-            filtered_orders = filtered_orders[
-                clean_labels(filtered_orders[market_col]).isin(selected_markets)
-            ]
+            options = sorted(labels(data[market_col]).unique())
+            selected = st.multiselect("Market", options, default=options)
+            data = data[labels(data[market_col]).isin(selected)]
 
         if shipping_col:
-            shipping_options = sorted(
-                clean_labels(filtered_orders[shipping_col]).unique().tolist()
+            options = sorted(labels(data[shipping_col]).unique())
+            selected = st.multiselect(
+                "Shipping mode", options, default=options
             )
-            selected_shipping = st.multiselect(
-                "Shipping mode",
-                shipping_options,
-                default=shipping_options
-            )
-            filtered_orders = filtered_orders[
-                clean_labels(filtered_orders[shipping_col]).isin(selected_shipping)
-            ]
+            data = data[labels(data[shipping_col]).isin(selected)]
 
         if region_col:
-            region_options = sorted(
-                clean_labels(filtered_orders[region_col]).unique().tolist()
+            options = sorted(labels(data[region_col]).unique())
+            selected = st.multiselect(
+                "Region", options, default=options
             )
-            selected_regions = st.multiselect(
-                "Order region",
-                region_options,
-                default=region_options
-            )
-            filtered_orders = filtered_orders[
-                clean_labels(filtered_orders[region_col]).isin(selected_regions)
-            ]
+            data = data[labels(data[region_col]).isin(selected)]
 
 
 # =========================================================
-# 9. KPI CARDS
+# KPI CARDS - EXPLICIT HTML TEXT
 # =========================================================
 st.markdown("## Executive Overview")
 
-total_orders = (
-    len(filtered_orders)
-    if filtered_orders is not None
-    else len(pred)
-)
+total_orders = len(data) if data is not None else len(pred)
 
-# Identify high risk from category, probability, or predicted label.
-risk_text = pred["_risk_category"].astype(str).str.lower()
-high_mask = risk_text.str.contains(
+high_categories = labels(pred["_risk_category"]).str.lower()
+high_mask = high_categories.str.contains(
     r"high|critical", regex=True, na=False
 )
 
@@ -451,121 +427,268 @@ else:
 late_rate = None
 late_orders = None
 
-if filtered_orders is not None and filtered_orders["_late"].notna().any():
-    valid_late = filtered_orders["_late"].dropna()
+if data is not None and data["_late"].notna().any():
+    valid_late = data["_late"].dropna()
     late_rate = valid_late.mean() * 100
     late_orders = int((valid_late == 1).sum())
 
-k1, k2, k3, k4 = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
 
-k1.metric("Total Orders", f"{total_orders:,}")
-k2.metric(
-    "High-Risk Orders",
-    f"{high_risk_count:,}" if high_risk_count is not None else "N/A"
-)
-k3.metric(
-    "Late Delivery Rate",
-    f"{late_rate:.2f}%" if late_rate is not None else "N/A"
-)
-k4.metric(
-    "Late Orders",
-    f"{late_orders:,}" if late_orders is not None else "N/A"
-)
+with c1:
+    kpi_card("Total Orders", f"{total_orders:,}")
+
+with c2:
+    kpi_card(
+        "High-Risk Orders",
+        f"{high_risk_count:,}" if high_risk_count is not None else "N/A"
+    )
+
+with c3:
+    kpi_card(
+        "Late Delivery Rate",
+        f"{late_rate:.2f}%" if late_rate is not None else "N/A"
+    )
+
+with c4:
+    kpi_card(
+        "Late Orders",
+        f"{late_orders:,}" if late_orders is not None else "N/A"
+    )
 
 st.caption(
-    "Total orders, late orders and late-delivery rate come from the "
-    "original order dataset when uploaded. High-risk orders come from "
-    "the prediction results. Counts may represent different datasets."
+    "KPIs are calculated from the uploaded data. If a required column "
+    "is missing, its metric displays N/A rather than inventing a value."
 )
 
 
 # =========================================================
-# 10. MAIN DASHBOARD CHARTS
+# PREDICTION CHARTS
 # =========================================================
-st.markdown("---")
+st.divider()
+st.markdown("## Predicted Delivery Risk Distribution")
 
-if filtered_orders is None:
+risk_counts = (
+    labels(pred["_risk_category"])
+    .value_counts()
+    .rename_axis("Risk Category")
+    .reset_index(name="Orders")
+)
+
+left, right = st.columns(2)
+
+with left:
+    heading("Predicted Risk Distribution")
+
+    fig = px.pie(
+        risk_counts,
+        names="Risk Category",
+        values="Orders",
+        hole=0.55,
+        color_discrete_sequence=[BLUE, "#2333ad", ORANGE, PINK, "#8b5cf6"]
+    )
+    fig.update_traces(textposition="inside", textinfo="percent+label")
+    fig.add_annotation(
+        text=f"{len(pred):,}<br>Orders",
+        x=0.5, y=0.5, showarrow=False,
+        font=dict(size=20, color="#333333")
+    )
+    show_chart(fig)
+
+with right:
+    heading("Late Delivery Probability")
+
+    valid_prob = pred["_prob"].dropna()
+
+    if len(valid_prob):
+        fig = px.histogram(
+            x=valid_prob * 100,
+            nbins=25,
+            labels={"x": "Probability (%)", "y": "Orders"},
+            color_discrete_sequence=[PINK]
+        )
+        show_chart(fig)
+    else:
+        st.info("No probability column was found in the prediction file.")
+
+left, right = st.columns(2)
+
+with left:
+    heading("Risk Level Breakdown")
+
+    fig = px.bar(
+        risk_counts,
+        x="Risk Category",
+        y="Orders",
+        color_discrete_sequence=[PINK],
+        text="Orders"
+    )
+    show_chart(fig)
+
+with right:
+    heading("Average Risk Probability")
+
+    if len(valid_prob):
+        avg_prob = float(valid_prob.mean() * 100)
+
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=avg_prob,
+            number={"suffix": "%"},
+            gauge={
+                "axis": {"range": [0, 100]},
+                "bar": {"color": PINK},
+                "steps": [
+                    {"range": [0, 40], "color": "#d1fae5"},
+                    {"range": [40, 70], "color": "#fef3c7"},
+                    {"range": [70, 100], "color": "#fee2e2"}
+                ]
+            }
+        ))
+        fig.update_layout(
+            template="plotly_white",
+            height=320,
+            paper_bgcolor="white",
+            font_color="#333333"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Upload a probability column to show the gauge.")
+
+
+# =========================================================
+# ACTUAL VS PREDICTED
+# =========================================================
+st.markdown("## Model Output Review")
+
+if pred["_actual"].notna().any() and pred["_predicted"].notna().any():
+    compare = pred[["_actual", "_predicted"]].dropna()
+
+    if not compare.empty:
+        accuracy = (
+            compare["_actual"] == compare["_predicted"]
+        ).mean() * 100
+
+        st.metric("Actual vs Predicted Accuracy", f"{accuracy:.2f}%")
+
+        matrix = pd.crosstab(
+            compare["_actual"].map({0: "Not Late", 1: "Late"}),
+            compare["_predicted"].map({0: "Not Late", 1: "Late"})
+        )
+
+        fig = px.imshow(
+            matrix,
+            text_auto=True,
+            aspect="auto",
+            color_continuous_scale="Blues",
+            labels={
+                "x": "Predicted",
+                "y": "Actual",
+                "color": "Orders"
+            }
+        )
+        show_chart(fig)
+else:
+    st.info(
+        "Actual-versus-predicted comparison requires both actual and "
+        "predicted label columns."
+    )
+
+
+# =========================================================
+# ORIGINAL ORDER ANALYTICS
+# =========================================================
+st.divider()
+st.markdown("## Operational Supply Chain Analytics")
+
+if data is None:
     st.warning(
-        "Upload the original order dataset to show shipping, market, "
-        "region, country, status, category and risk-driver charts."
+        "Upload the original order dataset to display shipping, sales, "
+        "region, country, status and category charts."
     )
 else:
-    # Row 1: Shipping mode, market, regional late rate, country map
-    col1, col2 = st.columns(2)
+    st.success(
+        f"Original order data loaded: {len(data):,} rows and "
+        f"{len(data.columns)} columns."
+    )
 
-    with col1:
-        chart_title("Late Delivery Risk by Shipping Mode")
+    if not data["_late"].notna().any():
+        st.warning(
+            "A late-risk column was not recognized. Expected a column such "
+            "as Late_delivery_risk. Check the dataset's column names."
+        )
 
-        if shipping_col and filtered_orders["_late"].notna().any():
-            shipping_data = safe_rate(
-                filtered_orders, shipping_col, "_late"
-            )
-            shipping_data = shipping_data.sort_values(
-                "Orders", ascending=False
-            )
+    # Shipping mode and sales by market
+    left, right = st.columns(2)
+
+    with left:
+        heading("Late Delivery Risk by Shipping Mode")
+
+        if shipping_col and data["_late"].notna().any():
+            grouped = rate_table(data, shipping_col)
 
             fig = px.bar(
-                shipping_data,
+                grouped.sort_values("Orders", ascending=False),
                 x=shipping_col,
                 y="Orders",
                 color_discrete_sequence=[PINK],
-                text="Orders"
+                text="Orders",
+                hover_data=["Late Rate (%)"]
             )
             fig.update_layout(
-                showlegend=False,
                 xaxis_title="Shipping Mode",
-                yaxis_title="Number of Orders"
+                yaxis_title="Orders",
+                showlegend=False
             )
-            styled_chart(fig, 290)
+            show_chart(fig)
         else:
-            st.info("Shipping mode and late-risk columns are required.")
+            st.info("Shipping mode or late-risk column is missing.")
 
-    with col2:
-        chart_title("Sales Performance by Market")
+    with right:
+        heading("Sales Performance by Market")
 
         if market_col and sales_col:
-            sales_data = filtered_orders.copy()
-            sales_data["_sales_value"] = pd.to_numeric(
-                sales_data[sales_col], errors="coerce"
+            temp = data.copy()
+            temp["_sales"] = pd.to_numeric(
+                temp[sales_col], errors="coerce"
             )
-            sales_data["_market_label"] = clean_labels(
-                sales_data[market_col]
-            )
-            market_sales = (
-                sales_data.groupby("_market_label", as_index=False)
-                ["_sales_value"].sum()
-                .sort_values("_sales_value", ascending=False)
+            temp["_market"] = labels(temp[market_col])
+
+            grouped = (
+                temp.groupby("_market", as_index=False)["_sales"]
+                .sum()
+                .sort_values("_sales", ascending=False)
             )
 
             fig = px.bar(
-                market_sales,
-                x="_sales_value",
-                y="_market_label",
+                grouped,
+                x="_sales",
+                y="_market",
                 orientation="h",
                 text_auto=".3s",
                 color_discrete_sequence=[PINK]
             )
             fig.update_layout(
-                showlegend=False,
                 xaxis_title="Sales",
-                yaxis_title=""
+                yaxis_title="Market",
+                showlegend=False
             )
-            styled_chart(fig, 290)
+            show_chart(fig)
         else:
-            st.info("Market and sales columns are required.")
+            st.info("Market or sales column is missing.")
 
-    col1, col2 = st.columns(2)
+    # Regional rate and country map
+    left, right = st.columns(2)
 
-    with col1:
-        chart_title("Late Delivery Rate by Region (%)")
+    with left:
+        heading("Late Delivery Rate by Region (%)")
 
-        if region_col and filtered_orders["_late"].notna().any():
-            region_data = safe_rate(
-                filtered_orders, region_col, "_late"
-            ).sort_values("Late Rate (%)", ascending=False)
+        if region_col and data["_late"].notna().any():
+            grouped = rate_table(data, region_col).sort_values(
+                "Late Rate (%)", ascending=True
+            )
 
             fig = px.bar(
-                region_data,
+                grouped,
                 x="Late Rate (%)",
                 y=region_col,
                 orientation="h",
@@ -573,242 +696,210 @@ else:
                 hover_data=["Orders"]
             )
             fig.update_layout(
-                showlegend=False,
-                xaxis_title="Late Delivery Rate (%)",
-                yaxis_title=""
+                xaxis_title="Late Rate (%)",
+                yaxis_title="Region",
+                showlegend=False
             )
-            styled_chart(fig, 320)
+            show_chart(fig)
         else:
-            st.info("Region and late-risk columns are required.")
+            st.info("Region or late-risk column is missing.")
 
-    with col2:
-        chart_title("Late Delivery Risk by Country & Region")
+    with right:
+        heading("Late Delivery Risk by Country")
 
-        if country_col and filtered_orders["_late"].notna().any():
-            country_data = safe_rate(
-                filtered_orders, country_col, "_late"
-            )
-            country_data = country_data.sort_values(
-                "Orders", ascending=False
-            ).head(100)
+        if country_col and data["_late"].notna().any():
+            grouped = rate_table(data, country_col)
 
-            # Use country names on Plotly's world map.
             fig = px.choropleth(
-                country_data,
+                grouped,
                 locations=country_col,
                 locationmode="country names",
                 color="Late Rate (%)",
                 hover_name=country_col,
-                hover_data=["Orders", "Late Rate (%)"],
+                hover_data=["Orders"],
                 color_continuous_scale="RdYlBu_r",
                 projection="natural earth"
             )
             fig.update_layout(
-                geo=dict(
-                    showframe=False,
-                    showcoastlines=True,
-                    bgcolor="white"
-                ),
-                coloraxis_colorbar_title="Late Rate (%)"
+                geo=dict(showframe=False, showcoastlines=True)
             )
-            styled_chart(fig, 320)
+            show_chart(fig)
         else:
-            st.info("Country and late-risk columns are required.")
+            st.info("Country or late-risk column is missing.")
 
-    # Row 2: Region/shipping table, status pie, category treemap
-    col1, col2 = st.columns(2)
+    # Region and shipping mode table, plus status distribution
+    left, right = st.columns(2)
 
-    with col1:
-        chart_title("Orders by Region and Shipping Mode")
+    with left:
+        heading("Orders by Region and Shipping Mode")
 
         if region_col and shipping_col:
-            pivot_data = pd.pivot_table(
-                filtered_orders,
-                index=region_col,
-                columns=shipping_col,
-                values=filtered_orders.columns[0],
-                aggfunc="count",
-                fill_value=0
-            )
-            pivot_data["Total"] = pivot_data.sum(axis=1)
-            pivot_data = pivot_data.sort_values(
-                "Total", ascending=False
+            temp = data.copy()
+            temp["_region"] = labels(temp[region_col])
+            temp["_shipping"] = labels(temp[shipping_col])
+
+            pivot = pd.crosstab(
+                temp["_region"], temp["_shipping"], margins=True
             )
             st.dataframe(
-                pivot_data,
+                pivot,
                 use_container_width=True,
-                height=330
+                height=320
             )
         else:
-            st.info("Region and shipping mode columns are required.")
+            st.info("Region or shipping mode column is missing.")
 
-    with col2:
-        chart_title("Order Status Distribution")
+    with right:
+        heading("Order Status Distribution")
 
         if status_col:
-            status_counts = (
-                clean_labels(filtered_orders[status_col])
+            counts = (
+                labels(data[status_col])
                 .value_counts()
                 .rename_axis("Order Status")
                 .reset_index(name="Orders")
             )
 
             fig = px.pie(
-                status_counts,
+                counts,
                 names="Order Status",
                 values="Orders",
                 color_discrete_sequence=px.colors.qualitative.Set2
             )
-            fig.update_traces(
-                textposition="outside",
-                textinfo="value+percent"
-            )
-            styled_chart(fig, 330)
+            fig.update_traces(textposition="outside", textinfo="value+percent")
+            show_chart(fig)
         else:
-            st.info("An order status column was not found.")
+            st.info("Order status column is missing.")
 
-    col1, col2 = st.columns(2)
+    # Product category and gauge
+    left, right = st.columns(2)
 
-    with col1:
-        chart_title("Late Orders by Product Category")
+    with left:
+        heading("Orders by Product Category")
 
         if category_col:
-            category_counts = (
-                clean_labels(filtered_orders[category_col])
+            counts = (
+                labels(data[category_col])
                 .value_counts()
                 .rename_axis("Product Category")
                 .reset_index(name="Orders")
             )
 
             fig = px.treemap(
-                category_counts,
+                counts,
                 path=["Product Category"],
                 values="Orders",
                 color="Orders",
                 color_continuous_scale="RdPu"
             )
-            styled_chart(fig, 330)
+            show_chart(fig)
         else:
-            st.info("A product category column was not found.")
+            st.info("Product category column is missing.")
 
-    with col2:
-        chart_title("Late Delivery Rate Gauge")
+    with right:
+        heading("Late Delivery Rate Gauge")
 
-        if filtered_orders["_late"].notna().any():
-            gauge_value = filtered_orders["_late"].mean() * 100
+        if data["_late"].notna().any():
+            gauge_rate = float(data["_late"].dropna().mean() * 100)
 
             fig = go.Figure(go.Indicator(
                 mode="gauge+number",
-                value=gauge_value,
-                number={"suffix": "%", "font": {"size": 34}},
+                value=gauge_rate,
+                number={"suffix": "%"},
                 gauge={
                     "axis": {"range": [0, 100]},
                     "bar": {"color": PINK},
                     "steps": [
                         {"range": [0, 40], "color": "#eeeeee"},
-                        {"range": [40, 70], "color": "#d6d6d6"},
-                        {"range": [70, 100], "color": "#bdbdbd"}
+                        {"range": [40, 70], "color": "#d7d7d7"},
+                        {"range": [70, 100], "color": "#bbbbbb"}
                     ]
                 }
             ))
             fig.update_layout(
-                height=330,
+                template="plotly_white",
+                height=320,
                 paper_bgcolor="white",
-                font_color="#333333",
-                margin=dict(t=45, b=15, l=20, r=20)
+                font_color="#333333"
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("A valid late-risk column is required.")
+            st.info("Late-risk data is required for this gauge.")
+
+    # Monthly order trend
+    st.markdown("### Order Trend Over Time")
+
+    if date_col:
+        temp = data.copy()
+        temp["_date"] = pd.to_datetime(
+            temp[date_col], errors="coerce", dayfirst=True
+        )
+        temp = temp.dropna(subset=["_date"])
+
+        if not temp.empty:
+            temp["_month"] = temp["_date"].dt.to_period("M").astype(str)
+            monthly = temp.groupby("_month").size().reset_index(name="Orders")
+
+            fig = px.line(
+                monthly,
+                x="_month",
+                y="Orders",
+                markers=True,
+                color_discrete_sequence=[PINK]
+            )
+            fig.update_layout(
+                xaxis_title="Month",
+                yaxis_title="Orders"
+            )
+            show_chart(fig)
+        else:
+            st.info("The order date column could not be parsed.")
+    else:
+        st.info("An order date column was not found.")
 
 
 # =========================================================
-# 11. TOP 10 RISK FACTORS ASSOCIATED WITH LATE DELIVERIES
+# RISK DRIVER ASSOCIATIONS
 # =========================================================
-st.markdown("---")
-st.markdown("## Top 10 Late Delivery Risk Drivers")
+st.divider()
+st.markdown("## Top Late Delivery Risk Drivers")
 
 st.caption(
-    "This section identifies associations in the uploaded data. "
-    "These are not model feature importances unless you provide "
-    "a trained model's feature-importance output."
+    "These are associations in the uploaded dataset, not trained-model "
+    "feature importance scores."
 )
 
-if filtered_orders is not None and late_col is not None:
-    candidate_cols = [
-        shipping_col,
-        market_col,
-        region_col,
-        category_col,
-        status_col
+if data is not None and data["_late"].notna().any():
+    factor_cols = [
+        shipping_col, market_col, region_col, category_col, status_col
     ]
-
-    # Add common DataCo columns when present.
-    for possible in [
-        "Days for shipment (scheduled)",
-        "Days for shipping (real)",
-        "Customer Segment",
-        "Department Name",
-        "Order Item Quantity",
-        "Order Item Discount Rate",
-        "Benefit per order",
-        "Latitude",
-        "Longitude"
-    ]:
-        found = find_col(filtered_orders, [possible])
-        if found:
-            candidate_cols.append(found)
-
-    candidate_cols = list(dict.fromkeys(
-        c for c in candidate_cols
-        if c is not None and c != late_col
+    factor_cols = list(dict.fromkeys(
+        col for col in factor_cols if col is not None
     ))
 
     factors = []
 
-    for col in candidate_cols:
-        temp = filtered_orders[[col, "_late"]].copy()
+    for col in factor_cols:
+        temp = data[[col, "_late"]].copy()
         temp["_late"] = pd.to_numeric(temp["_late"], errors="coerce")
         temp = temp.dropna(subset=["_late"])
 
         if temp.empty:
             continue
 
-        if (
-            pd.api.types.is_numeric_dtype(temp[col])
-            and temp[col].nunique() > 10
-        ):
-            x = pd.to_numeric(temp[col], errors="coerce")
-            valid = x.notna() & temp["_late"].notna()
+        temp["_group"] = labels(temp[col])
+        rates = temp.groupby("_group")["_late"].mean()
 
-            if valid.sum() > 2 and x[valid].nunique() > 1:
-                correlation = x[valid].corr(temp.loc[valid, "_late"])
-
-                if pd.notna(correlation):
-                    factors.append({
-                        "Factor": str(col),
-                        "Association": abs(float(correlation)) * 100
-                    })
-        else:
-            temp["_group"] = clean_labels(temp[col])
-
-            group_rates = temp.groupby("_group")["_late"].mean()
-
-            if len(group_rates) >= 2:
-                spread = (
-                    group_rates.max() - group_rates.min()
-                ) * 100
-
-                factors.append({
-                    "Factor": str(col),
-                    "Association": float(spread)
-                })
+        if len(rates) > 1:
+            factors.append({
+                "Factor": str(col),
+                "Association": float((rates.max() - rates.min()) * 100)
+            })
 
     if factors:
-        factor_df = pd.DataFrame(factors)
-        factor_df = factor_df.sort_values(
-            "Association", ascending=False
-        ).head(10).sort_values("Association")
+        factor_df = pd.DataFrame(factors).sort_values(
+            "Association", ascending=True
+        )
 
         fig = px.bar(
             factor_df,
@@ -818,124 +909,63 @@ if filtered_orders is not None and late_col is not None:
             text="Association",
             color_discrete_sequence=[PINK]
         )
-        fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
         fig.update_layout(
-            xaxis_title="Association score (percentage points or |correlation| × 100)",
+            xaxis_title="Difference in late rate (percentage points)",
             yaxis_title="",
-            showlegend=False,
-            height=360
+            showlegend=False
         )
-        styled_chart(fig, 390)
+        show_chart(fig)
     else:
-        st.info("Not enough suitable columns were found to compare risk factors.")
+        st.info("Not enough category variation was found to compare factors.")
 else:
     st.info(
-        "Upload original order data with a recognizable late-risk column "
-        "to calculate associated risk factors."
+        "Upload original orders with a recognizable late-risk column "
+        "to calculate risk-driver associations."
     )
 
 
 # =========================================================
-# 12. PREDICTED DELIVERY RISK DISTRIBUTION
+# DATA TABLE AND DOWNLOADS
 # =========================================================
-st.markdown("---")
-st.markdown("## Predicted Delivery Risk Distribution")
-
-risk_counts = (
-    clean_labels(pred["_risk_category"])
-    .value_counts()
-    .rename_axis("Risk Category")
-    .reset_index(name="Orders")
-)
-
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    fig = px.pie(
-        risk_counts,
-        names="Risk Category",
-        values="Orders",
-        hole=0.62,
-        color_discrete_sequence=[BLUE, "#1c2eae", ORANGE, PINK, PURPLE]
-    )
-    fig.update_traces(
-        textposition="outside",
-        textinfo="value+percent"
-    )
-    fig.add_annotation(
-        text=f"{len(pred):,}<br>Orders",
-        x=0.5,
-        y=0.5,
-        showarrow=False,
-        font=dict(size=20, color="#333333")
-    )
-    styled_chart(fig, 350)
-
-with col2:
-    st.markdown("### Prediction summary")
-
-    st.metric("Prediction Rows", f"{len(pred):,}")
-
-    if pred["_prob"].notna().any():
-        st.metric(
-            "Average Predicted Probability",
-            f"{pred['_prob'].mean() * 100:.2f}%"
-        )
-
-    st.dataframe(
-        risk_counts,
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-# =========================================================
-# 13. PREDICTION DATA EXPLORER
-# =========================================================
-st.markdown("---")
+st.divider()
 st.markdown("## Prediction Results Explorer")
 
-search = st.text_input(
+search_text = st.text_input(
     "Search prediction results",
-    placeholder="Search for a risk label or value"
+    placeholder="Type a risk label or value"
 )
 
-result_view = pred.copy()
+result = pred.copy()
 
-if search.strip():
-    mask = result_view.astype(str).apply(
-        lambda column: column.str.contains(
-            search, case=False, na=False
+if search_text.strip():
+    matches = result.astype(str).apply(
+        lambda col: col.str.contains(
+            search_text, case=False, na=False
         )
     ).any(axis=1)
-    result_view = result_view[mask]
+    result = result[matches]
 
-st.caption(f"{len(result_view):,} rows match your search.")
+st.caption(f"{len(result):,} matching prediction rows.")
 
 st.dataframe(
-    result_view.head(1000),
+    result.head(1000),
     use_container_width=True,
     hide_index=True
 )
 
 st.download_button(
     "Download filtered predictions",
-    data=result_view.to_csv(index=False).encode("utf-8"),
+    data=result.to_csv(index=False).encode("utf-8"),
     file_name="filtered_predictions.csv",
     mime="text/csv"
 )
 
-if filtered_orders is not None:
-    with st.expander("Inspect original order dataset"):
-        st.write("Rows:", len(filtered_orders))
-        st.write("Columns:", len(filtered_orders.columns))
-        st.dataframe(
-            filtered_orders.head(100),
-            use_container_width=True,
-            hide_index=True
-        )
+if data is not None:
+    with st.expander("Inspect original order data"):
+        st.write(f"Rows: {len(data):,}")
+        st.write(f"Columns: {len(data.columns)}")
+        st.dataframe(data.head(100), use_container_width=True)
 
-st.markdown("---")
 st.caption(
     "Smart Chain AI Late Delivery Risk | Built with Streamlit, "
     "Pandas and Plotly"
