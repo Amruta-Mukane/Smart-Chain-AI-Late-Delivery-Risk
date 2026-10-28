@@ -95,3 +95,124 @@ if pred is None and orders is None:
     
 
 # ---------- Identify fields ----------
+late_col = column(orders, ["Late_delivery_risk", "Late Delivery Risk", "Late Risk", "Is Late"])
+shipping_col = column(orders, ["Shipping Mode", "Ship Mode"])
+region_col = column(orders, ["Order Region", "Region"])
+country_col = column(orders, ["Order Country", "Country"])
+market_col = column(orders, ["Market"])
+sales_col = column(orders, ["Sales", "Sales Amount", "Revenue"])
+category_col = column(orders, ["Category Name", "Product Category"])
+status_col = column(orders, ["Order Status", "Delivery Status"])
+prob_col = column(pred, ["Late_Delivery_Probability", "Late Delivery Probability", "Probability"])
+risk_col = column(pred, ["Risk_Category", "Risk Category", "Risk Level"])
+pred_col = column(pred, ["Predicted_Late_Risk", "Predicted Late Risk", "Prediction"])
+
+late = binary(orders[late_col]) if orders is not None and late_col else pd.Series(dtype=float)
+rate = late.dropna().mean() * 100 if len(late.dropna()) else None
+late_count = int((late == 1).sum()) if len(late.dropna()) else None
+total_orders = len(orders) if orders is not None else (len(pred) if pred is not None else 0)
+
+if pred is not None and risk_col:
+    risk_labels = pred[risk_col].fillna("Unknown").astype(str)
+    high_risk = int(risk_labels.str.lower().str.contains("high|critical").sum())
+elif pred is not None and prob_col:
+    probability = pd.to_numeric(pred[prob_col], errors="coerce")
+    if probability.max() > 1:
+        probability = probability / 100
+    high_risk = int((probability >= 0.7).sum())
+elif pred is not None and pred_col:
+    high_risk = int((binary(pred[pred_col]) == 1).sum())
+else:
+    high_risk = None
+
+# ---------- KPI overview ----------
+a,b,c,d = st.columns(4)
+a.metric("Total orders", f"{total_orders:,}")
+b.metric("High-risk predictions", f"{high_risk:,}" if high_risk is not None else "N/A")
+c.metric("Late delivery rate", f"{rate:.2f}%" if rate is not None else "N/A")
+d.metric("Late orders", f"{late_count:,}" if late_count is not None else "N/A")
+
+# ---------- Evidence-based insight summary ----------
+st.subheader("Key insights")
+insights = []
+if rate is not None:
+    insights.append(f"Late delivery rate is **{rate:.2f}%** across {len(late.dropna()):,} orders with a valid late-risk label.")
+if high_risk is not None and pred is not None:
+    insights.append(f"The prediction file contains **{high_risk:,} high-risk records** out of {len(pred):,} predictions.")
+if orders is not None and shipping_col and len(late.dropna()):
+    tmp = pd.DataFrame({"Shipping mode": orders[shipping_col].astype(str), "Late": late}).dropna()
+    if not tmp.empty:
+        rates = tmp.groupby("Shipping mode")["Late"].mean().mul(100).sort_values(ascending=False)
+        insights.append(f"Highest late rate by shipping mode: **{rates.index[0]} ({rates.iloc[0]:.1f}%)**.")
+if orders is not None and region_col and len(late.dropna()):
+    tmp = pd.DataFrame({"Region": orders[region_col].astype(str), "Late": late}).dropna()
+    if not tmp.empty:
+        rates = tmp.groupby("Region")["Late"].mean().mul(100).sort_values(ascending=False)
+        insights.append(f"Highest late rate by region: **{rates.index[0]} ({rates.iloc[0]:.1f}%)**.")
+if not insights:
+    insights.append("Upload datasets containing recognizable prediction and late-delivery fields to generate evidence-based insights.")
+for insight in insights:
+    st.markdown(f'<div class="insight">{insight}</div>', unsafe_allow_html=True)
+
+# ---------- Charts ----------
+left, right = st.columns(2)
+with left:
+    st.subheader("Predicted risk distribution")
+    if pred is not None and risk_col:
+        counts = pred[risk_col].fillna("Unknown").astype(str).value_counts().rename_axis("Risk").reset_index(name="Orders")
+        st.plotly_chart(px.pie(counts, names="Risk", values="Orders", hole=.48,
+                               color_discrete_sequence=[BLUE, PINK, ORANGE, "#7c83fd"]), use_container_width=True)
+    elif pred is not None and prob_col:
+        p = pd.to_numeric(pred[prob_col], errors="coerce").dropna()
+        if p.max() > 1: p = p / 100
+        st.plotly_chart(px.histogram(x=p, nbins=25, labels={"x":"Late-delivery probability","y":"Records"},
+                                     color_discrete_sequence=[PINK]), use_container_width=True)
+    else:
+        st.info("Prediction risk category/probability column not found.")
+
+with right:
+    st.subheader("Late delivery by shipping mode")
+    if orders is not None and shipping_col and len(late.dropna()):
+        chart_df = pd.DataFrame({"Shipping mode": orders[shipping_col].astype(str), "Late": late}).dropna()
+        chart_df = chart_df.groupby("Shipping mode", as_index=False)["Late"].mean()
+        chart_df["Late rate (%)"] = chart_df["Late"] * 100
+        st.plotly_chart(px.bar(chart_df.sort_values("Late rate (%)", ascending=False),
+                               x="Shipping mode", y="Late rate (%)", text_auto=".1f",
+                               color_discrete_sequence=[PINK]), use_container_width=True)
+    else:
+        st.info("Shipping mode or late-delivery label is unavailable.")
+
+left, right = st.columns(2)
+with left:
+    st.subheader("Late delivery by region")
+    if orders is not None and region_col and len(late.dropna()):
+        chart_df = pd.DataFrame({"Region": orders[region_col].astype(str), "Late": late}).dropna()
+        chart_df = chart_df.groupby("Region", as_index=False)["Late"].mean()
+        chart_df["Late rate (%)"] = chart_df["Late"] * 100
+        chart_df = chart_df.sort_values("Late rate (%)", ascending=False).head(15)
+        st.plotly_chart(px.bar(chart_df, x="Late rate (%)", y="Region", orientation="h",
+                               color_discrete_sequence=[BLUE]), use_container_width=True)
+    else:
+        st.info("Region or late-delivery label is unavailable.")
+
+with right:
+    st.subheader("Sales by market")
+    if orders is not None and market_col and sales_col:
+        sales = orders.copy()
+        sales[sales_col] = pd.to_numeric(sales[sales_col], errors="coerce")
+        chart_df = sales.groupby(market_col, dropna=False)[sales_col].sum().reset_index()
+        chart_df.columns = ["Market", "Sales"]
+        st.plotly_chart(px.bar(chart_df.sort_values("Sales", ascending=False), x="Market", y="Sales",
+                               color_discrete_sequence=[ORANGE]), use_container_width=True)
+    else:
+        st.info("Market or sales columns are unavailable.")
+
+with st.expander("View prediction records"):
+    if pred is not None:
+        st.dataframe(pred.head(500), width="stretch", hide_index=True)
+        st.download_button("Download predictions as CSV", pred.to_csv(index=False).encode("utf-8"),
+                           "predictions.csv", "text/csv")
+    else:
+        st.info("No prediction file loaded.")
+
+st.caption("Insights are calculated from the loaded data. Prediction records and original orders may represent different populations.")
