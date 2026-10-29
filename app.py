@@ -176,45 +176,7 @@ k2.metric("High-risk predictions", f"{high_risk:,}" if high_risk is not None els
 k3.metric("Late delivery rate", f"{late_rate:.2f}%" if late_rate is not None else "N/A")
 k4.metric("Late orders", f"{late_orders:,}" if late_orders is not None else "N/A")
 
-# ---------- Main insights ----------
-st.subheader("Main insights")
-insights = []
-
-if late_rate is not None:
-    insights.append(
-        f"Observed late-delivery rate: **{late_rate:.2f}%** "
-        f"across {len(valid_late):,} records with a valid late-risk label."
-    )
-if high_risk is not None:
-    insights.append(
-        f"**{high_risk:,} high-risk predictions** out of "
-        f"{len(predictions):,} prediction records."
-    )
-if shipping_col is not None and not valid_late.empty:
-    temp = pd.DataFrame({
-        "Shipping mode": orders[shipping_col].astype(str),
-        "Late": late,
-    }).dropna()
-    if not temp.empty:
-        rates = temp.groupby("Shipping mode")["Late"].mean().mul(100).sort_values(ascending=False)
-        insights.append(
-            f"Highest late-delivery rate by shipping mode: "
-            f"**{rates.index[0]} ({rates.iloc[0]:.1f}%)**."
-        )
-if region_col is not None and not valid_late.empty:
-    temp = pd.DataFrame({"Region": orders[region_col].astype(str), "Late": late}).dropna()
-    if not temp.empty:
-        rates = temp.groupby("Region")["Late"].mean().mul(100).sort_values(ascending=False)
-        insights.append(
-            f"Highest late-delivery rate by region: **{rates.index[0]} ({rates.iloc[0]:.1f}%)**."
-        )
-
-if not insights:
-    insights.append("The available data does not contain enough recognized fields to calculate insights.")
-
-for insight in insights:
-    st.markdown(f'<div class="insight">{insight}</div>', unsafe_allow_html=True)
-
+      
 # ---------- Main charts only ----------
 left, right = st.columns(2)
 
