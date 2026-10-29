@@ -349,3 +349,30 @@ st.caption(
     "Metrics are calculated from the available datasets. "
     "Prediction records and original orders may represent different populations."
 )
+
+
+st.divider()
+st.subheader("Business Recommendations")
+
+recommendations = [
+    ("Delivery performance",
+     "Investigate the causes of the 54.83% late-delivery rate and monitor improvement over time."),
+    ("Shipping operations",
+     "Review First Class delivery processes, scheduling, and carrier performance."),
+    ("Regional operations",
+     "Investigate logistics constraints and delivery delays in Central Africa."),
+    ("Risk management",
+     "Prioritize high-risk predictions for operational review before dispatch."),
+    ("Sales and logistics",
+     "Compare sales demand with delivery capacity across markets, especially Europe."),
+]
+
+for title, detail in recommendations:
+    with st.container(border=True):
+        st.markdown(f"**{title}**")
+        st.write(detail)
+
+st.caption(
+    "Recommendations are investigation priorities based on observed patterns, "
+    "not proof of the causes of late delivery."
+)
