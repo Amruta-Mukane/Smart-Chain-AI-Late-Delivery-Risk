@@ -176,6 +176,90 @@ k2.metric("High-risk predictions", f"{high_risk:,}" if high_risk is not None els
 k3.metric("Late delivery rate", f"{late_rate:.2f}%" if late_rate is not None else "N/A")
 k4.metric("Late orders", f"{late_orders:,}" if late_orders is not None else "N/A")
 
+
+# ---------- Advanced Business Insights ----------
+st.subheader("Advanced Business Insights")
+
+insights = []
+
+# 1. Overall late-delivery performance
+if late_rate is not None:
+    insights.append(
+        f"📦 {late_rate:.2f}% of orders were late "
+        f"({late_orders:,} late orders out of {len(valid_late):,} valid records)."
+    )
+
+# 2. High-risk prediction share
+if high_risk is not None and len(predictions) > 0:
+    risk_share = high_risk / len(predictions) * 100
+    insights.append(
+        f"⚠️ {high_risk:,} orders are classified as high risk "
+        f"({risk_share:.2f}% of prediction records)."
+    )
+
+# 3. Shipping mode with highest late-delivery rate
+if shipping_col is not None and late.notna().any():
+    shipping_data = pd.DataFrame({
+        "Shipping Mode": orders[shipping_col].astype(str),
+        "Late": late
+    }).dropna()
+
+    if not shipping_data.empty:
+        shipping_rates = (
+            shipping_data.groupby("Shipping Mode")["Late"]
+            .agg(["mean", "count"])
+            .sort_values("mean", ascending=False)
+        )
+        top_mode = shipping_rates.index[0]
+        top_rate = shipping_rates.iloc[0]["mean"] * 100
+        insights.append(
+            f"🚚 {top_mode} has the highest observed late-delivery rate "
+            f"({top_rate:.1f}%)."
+        )
+
+# 4. Region with highest late-delivery rate
+if region_col is not None and late.notna().any():
+    region_data = pd.DataFrame({
+        "Region": orders[region_col].astype(str),
+        "Late": late
+    }).dropna()
+
+    if not region_data.empty:
+        region_rates = (
+            region_data.groupby("Region")["Late"]
+            .agg(["mean", "count"])
+            .sort_values("mean", ascending=False)
+        )
+        top_region = region_rates.index[0]
+        top_region_rate = region_rates.iloc[0]["mean"] * 100
+        insights.append(
+            f"🌍 {top_region} has the highest observed regional "
+            f"late-delivery rate ({top_region_rate:.1f}%)."
+        )
+
+# 5. Market with highest sales
+if market_col is not None and sales_col is not None:
+    market_data = orders[[market_col, sales_col]].copy()
+    market_data[sales_col] = pd.to_numeric(
+        market_data[sales_col], errors="coerce"
+    )
+    market_sales = market_data.groupby(market_col)[sales_col].sum().dropna()
+
+    if not market_sales.empty:
+        best_market = market_sales.idxmax()
+        insights.append(
+            f"💰 {best_market} contributes the highest total sales "
+            f"({market_sales.max():,.2f} in dataset currency units)."
+        )
+
+# Display insights without cluttering the main dashboard
+with st.expander("View key business insights", expanded=False):
+    if insights:
+        for item in insights:
+            st.markdown(f"- {item}")
+    else:
+        st.info("Not enough valid data to calculate business insights.")
+
       
 # ---------- Main charts only ----------
 left, right = st.columns(2)
