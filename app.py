@@ -351,28 +351,33 @@ st.caption(
 )
 
 
+
+
 st.divider()
 st.subheader("Business Recommendations")
 
 recommendations = [
-    ("Delivery performance",
-     "Investigate the causes of the 54.83% late-delivery rate and monitor improvement over time."),
-    ("Shipping operations",
-     "Review First Class delivery processes, scheduling, and carrier performance."),
-    ("Regional operations",
-     "Investigate logistics constraints and delivery delays in Central Africa."),
-    ("Risk management",
-     "Prioritize high-risk predictions for operational review before dispatch."),
-    ("Sales and logistics",
-     "Compare sales demand with delivery capacity across markets, especially Europe."),
+    ("🚚 Delivery Performance",
+     "Investigate causes of the 54.83% late-delivery rate."),
+    ("📦 Shipping Operations",
+     "Review First Class scheduling and carrier performance."),
+    ("🌍 Regional Performance",
+     "Investigate delivery delays in Central Africa."),
+    ("⚠️ Risk Management",
+     "Prioritize high-risk orders for operational review."),
+    ("📊 Sales & Logistics",
+     "Align delivery capacity with demand across markets."),
 ]
 
-for title, detail in recommendations:
-    with st.container(border=True):
-        st.markdown(f"**{title}**")
-        st.write(detail)
+for i in range(0, len(recommendations), 2):
+    cols = st.columns(2)
+    for col, (title, detail) in zip(cols, recommendations[i:i + 2]):
+        with col:
+            with st.container(border=True):
+                st.markdown(f"**{title}**")
+                st.write(detail)
 
 st.caption(
-    "Recommendations are investigation priorities based on observed patterns, "
-    "not proof of the causes of late delivery."
+    "Recommendations identify areas for investigation; "
+    "they do not establish the causes of delays."
 )
