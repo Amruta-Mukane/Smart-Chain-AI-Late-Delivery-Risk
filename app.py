@@ -336,15 +336,6 @@ with right:
     else:
         st.info("Market or sales column was not found.")
 
-with st.expander("Preview prediction records"):
-    st.dataframe(predictions.head(300), width="stretch", hide_index=True)
-    st.download_button(
-        "Download predictions CSV",
-        predictions.to_csv(index=False).encode("utf-8"),
-        file_name="predictions.csv",
-        mime="text/csv",
-    )
-
 st.caption(
     "Metrics are calculated from the available datasets. "
     "Prediction records and original orders may represent different populations."
