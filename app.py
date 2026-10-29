@@ -93,6 +93,103 @@ def to_binary(series):
     }
     return series.astype(str).str.strip().str.lower().map(mapping)
 
+
+# ---------- Load datasets automatically from the repository ----------
+prediction_path = find_file([
+    "ML_Risk_Predictions.csv.xlsx",
+    "ML_Risk_Predictions.xlsx",
+    "ML_Risk_Predictions.csv",
+])
+orders_path = find_file([
+    "APL_Logistics.csv.gz",
+    "APL_Logistics.csv",
+    "APL_Logistics(1).csv",
+    "orders.csv.gz",
+    "orders.csv",
+    "orders.xlsx",
+    "DataCoSupplyChainDataset.csv",
+])
+
+st.title("📦 Smart Chain AI — Late Delivery Risk")
+st.caption("Machine-learning risk review • Delivery performance • Main business insights")
+
+missing = []
+if prediction_path is None:
+    missing.append("ML_Risk_Predictions.csv.xlsx")
+if orders_path is None:
+    missing.append("APL_Logistics.csv.gz")
+
+if missing:
+    st.error("The deployed app cannot find: " + ", ".join(missing))
+    st.info(
+        "Put the dataset files in the same GitHub folder as app.py, "
+        "or in a folder named data/. Keep the filenames listed in the code."
+    )
+    st.stop()
+
+try:
+    predictions = load_predictions(
+        str(prediction_path), prediction_path.stat().st_mtime
+    )
+    orders = load_orders(str(orders_path), orders_path.stat().st_mtime)
+except Exception as exc:
+    st.error(f"Could not load project data: {exc}")
+    st.stop()
+
+# ---------- Find required columns ----------
+late_col = find_col(orders, ["Late_delivery_risk", "Late Delivery Risk"])
+shipping_col = find_col(orders, ["Shipping Mode", "Ship Mode"])
+region_col = find_col(orders, ["Order Region", "Region"])
+market_col = find_col(orders, ["Market"])
+sales_col = find_col(orders, ["Sales", "Sales Amount", "Revenue"])
+status_col = find_col(orders, ["Order Status", "Delivery Status"])
+category_col = find_col(orders, ["Category Name", "Product Category"])
+
+risk_col = find_col(predictions, ["Risk_Category", "Risk Category"])
+prob_col = find_col(predictions, ["Late_Delivery_Probability", "Probability"])
+
+late = (
+    to_binary(orders[late_col])
+    if late_col is not None
+    else pd.Series(index=orders.index, dtype="float64")
+)
+valid_late = late.dropna()
+late_rate = valid_late.mean() * 100 if not valid_late.empty else None
+late_orders = int((valid_late == 1).sum()) if not valid_late.empty else None
+
+if risk_col is not None:
+    risk_values = predictions[risk_col].fillna("Unknown").astype(str)
+    high_risk = int(risk_values.str.lower().str.contains("high|critical").sum())
+elif prob_col is not None:
+    probability = pd.to_numeric(predictions[prob_col], errors="coerce")
+    if probability.notna().any() and probability.max() > 1:
+        probability = probability / 100
+    high_risk = int((probability >= 0.7).sum())
+else:
+    high_risk = None
+
+# ---------- KPI cards ----------
+st.subheader("Executive overview")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Total orders", f"{len(orders):,}")
+k2.metric("High-risk predictions", f"{high_risk:,}" if high_risk is not None else "N/A")
+k3.metric("Late delivery rate", f"{late_rate:.2f}%" if late_rate is not None else "N/A")
+k4.metric("Late orders", f"{late_orders:,}" if late_orders is not None else "N/A")
+
+# ---------- Main insights ----------
+st.subheader("Main insights")
+insights = []
+
+if late_rate is not None:
+    insights.append(
+        f"Observed late-delivery rate: **{late_rate:.2f}%** "
+        f"across {len(valid_late):,} records with a valid late-risk label."
+    )
+if high_risk is not None:
+    insights.append(
+        f"**{high_risk:,} high-risk predictions** out of "
+        f"{len(predictions):,} prediction records."
+    )
 if shipping_col is not None and not valid_late.empty:
     temp = pd.DataFrame({
         "Shipping mode": orders[shipping_col].astype(str),
